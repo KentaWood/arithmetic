@@ -6,6 +6,7 @@ This is a "simple" homework to practice parsing grammars and working with the re
 import lark
 
 
+
 grammar = r"""
     start: sum
 
@@ -13,21 +14,47 @@ grammar = r"""
         | sum "+" product   -> add
         | sum "-" product   -> sub
 
-    ?product: atom
-        | product "*" atom  -> mul
-        | product "/" atom  -> div
+    ?product: power
+        | product "*" power -> mul
+        | product "/" power -> div
+        | product "%" power -> mod
+
+    ?power: atom
+        | power "**" atom   -> exp
 
     ?atom: NUMBER           -> number
-        | "(" sum ")"       -> paren
+        | "(" sum ")"         -> paren
+        | atom "(" sum ")"  -> implicit_mul  
 
     NUMBER: /-?[0-9]+/
 
     %import common.WS_INLINE
     %ignore WS_INLINE
 """
+
 parser = lark.Lark(grammar)
 
 
+# tree = parser.parse("123")
+tree = parser.parse("123+4")
+#tree = parser.parse("123+4*5")
+#tree = parser.parse("(123+4)*5")
+#tree = parser.parse("(123+4)*((5+6)/(7+8))+9")
+
+
+# Interpreter "interprets" the tree from root to leaf.
+# 1) You must manually manage recursion.
+# 2) Depending on how you manage that recursion,
+#       you can end up doing a lot of "extra computation."
+
+# Able to compute control flow like if-statements, loops, and functions.
+# Interpreters are strictly more powerful and can do anything a simplifier can do.
+
+# One of the defining characteristics of a "senior"
+# is using the right_child level of power for a task.
+# Explicitly limiting your power is good.
+
+ 
 class Interpreter(lark.visitors.Interpreter):
     '''
     Compute the value of the expression.
@@ -127,6 +154,63 @@ class Interpreter(lark.visitors.Interpreter):
     >>> interpreter.visit(parser.parse("(1+2)(3(4))"))
     36
     '''
+    
+    def start(self, tree):
+        # import code; code.interact(lcoal=locals())
+        return self.visit(tree.children[0])
+    
+    def add(self, tree):
+        v0 = self.visit(tree.children[0])
+        v1 = self.visit(tree.children[1])
+        return v0 + v1
+    
+    def sub(self, tree):
+        v0 = self.visit(tree.children[0])
+        v1 = self.visit(tree.children[1])
+        return v0 - v1
+
+    def mul(self, tree):
+        v0 = self.visit(tree.children[0])
+        v1 = self.visit(tree.children[1])
+        return v0 * v1
+    
+    def div(self, tree):
+        v0 = self.visit(tree.children[0])
+        v1 = self.visit(tree.children[1])
+        return v0 // v1
+    
+    def mod(self, tree):
+        v0 = self.visit(tree.children[0])
+        v1 = self.visit(tree.children[1])
+        return v0 % v1
+    
+    
+    def paren(self, tree):
+        return self.visit(tree.children[0])
+    
+    def exp(self, tree):
+        v0 = self.visit(tree.children[0])
+        v1 = self.visit(tree.children[1])
+        val = v0 ** v1
+        if val < 1:
+            return 0
+        else:
+            return val
+
+    def implicit_mul(self, tree):
+        v0 = self.visit(tree.children[0])
+        v1 = self.visit(tree.children[1])
+        return v0 * v1
+    
+    def number(self, tree):
+        return int(tree.children[0].value)
+
+tree1 = Interpreter().visit(tree)
+
+# Simplifier
+# 1) No manual recursion.
+# 2) The amount of computation is very limited.
+#    - Visit nodes in the tree exactly once.
 
 
 class Simplifier(lark.Transformer):
@@ -226,11 +310,137 @@ class Simplifier(lark.Transformer):
     >>> simplifier.transform(parser.parse("(1+2)(3(4))"))
     36
     '''
+    def start(self, children):
+        return children[0]
+    
+    def add(self, children):
+        return children[0] + children[1]
+    
+    def sub(self, children):
+        return children[0] - children[1]
+    
+    def mul(self, children):
+        return children[0] * children[1]
+
+    def div(self, children):
+        return children[0] // children[1]
+    
+    def mod(self, children):
+        return children[0] % children[1]
+    
+    def exp(self, children):
+        v0 = children[0]
+        v1 = children[1]
+        
+        if v0 ** v1 < 1:
+            return 0
+        return v0 ** v1
+    
+    def implicit_mul(self, children):
+        return children[0] * children[1]
+
+    def paren(self, children):
+        return children[0]
+    
+
+    def number(self, children):
+        return int(children[0].value)
+
+# tree2 = Simplifier().transform(tree)
 
 
 ########################################
 # other transformations
 ########################################
+
+
+
+class RemoveParentheses(lark.Transformer):
+# Initially aimed to remove unnecessary parentheses in a single pass, 
+# but examples like minify("1 + (((2)*(3)) + 4 * ((5 + 6) - 7))") failed, 
+# as both left and right sides needed inspection. 
+# Switched to evaluating left and right operands separately and adding parentheses as needed.
+
+    def start(self, children):
+        # Start node, simply returns the entire expression
+        return children[0]
+
+    def add(self, children):
+        # Addition doesn't need additional parentheses
+        left_child, right_child = children
+        return left_child + "+" + right_child
+
+    def sub(self, children):
+        # Subtraction doesn't need additional parentheses
+        left_child, right_child = children
+        return left_child + "-" + right_child
+
+    def mul(self, children):
+        # Multiplication wraps its operands in parentheses if they contain '+' or '-' to preserve precedence
+        left_child, right_child = children
+        if '+' in left_child or '-' in left_child:
+            left_child = "(" + left_child + ")"
+        if '+' in right_child or '-' in right_child:
+            right_child = "(" + right_child + ")"
+        return left_child + "*" + right_child
+
+    def div(self, children):
+        # Same as Mul
+        left_child, right_child = children
+        if '+' in left_child or '-' in left_child:
+            left_child = "(" + left_child + ")"
+        if '+' in right_child or '-' in right_child:
+            right_child = "(" + right_child + ")"
+        return left_child + "/" + right_child
+
+    def exp(self, children):
+        # Exponentiation wraps the base in parentheses if it contains lower-precedence operations
+        base, exponent = children
+        # Wrap the base in parentheses if it contains +, -, *, or /
+        if any(op in base for op in '+-*/'):
+            base = "(" + base + ")"
+        return base + "**" + exponent
+
+    def paren(self, children):
+        # Remove redundant parentheses by directly returning the inner expression
+        return children[0]  # Unwrap single inner expression
+
+    def number(self, children):
+        # Return the number as a string
+        return children[0].value
+ 
+
+
+class ToString(lark.Transformer):
+    def start(self, children):
+        # Concatenate the string result of the expression
+        return ''.join(children)
+    
+    def add(self, children):
+        return children[0] + "+" + children[1]
+    
+    def sub(self, children):
+        return children[0] + "-" + children[1]
+    
+    def mul(self, children):
+        return children[0] + "*" + children[1]
+    
+    def div(self, children):
+        return children[0] + "/" + children[1]
+    
+    def mod(self, children):
+        return children[0] + "%" + children[1]
+    
+    def exp(self, children):
+        return children[0] + "**" + children[1]
+    
+    def number(self, token):
+        # The token is a single element, so return the token value as a string
+        return str(token[0])
+    
+    def paren(self, children):
+        # Add parentheses around expressions if needed
+        return "(" + children[0] + ")"
 
 
 def minify(expr):
@@ -282,7 +492,43 @@ def minify(expr):
     >>> minify("1 + (((2)*(3)) + 4 * ((5 + 6) - 7))")
     '1+2*3+4*(5+6-7)'
     '''
+    tree = parser.parse(expr)
+    
+    # print("Here1 \n" + tree.pretty())
 
+    simple_tree = RemoveParentheses().transform(tree)
+    
+    # print("Here2 \n" + simple_tree.pretty())
+    
+    return ToString().transform(simple_tree)
+
+class ToRPN(lark.Transformer):
+    def start(self, children):
+        return ' '.join(children)
+    
+    def add(self, children):
+        return children[0] + ' ' + children[1] + ' +'
+    
+    def sub(self, children):
+        return children[0] + ' ' + children[1] + ' -'
+    
+    def mul(self, children):
+        return children[0] + ' ' + children[1] + ' *'
+    
+    def div(self, children):
+        return children[0] + ' ' + children[1] + ' /'
+    
+    def mod(self, children):
+        return children[0] + ' ' + children[1] + ' %'
+    
+    def exp(self, children):
+        return children[0] + ' ' + children[1] + ' **'
+    
+    def paren(self, children):
+        return children[0]
+    
+    def number(self, token):
+        return token[0]
 
 def infix_to_rpn(expr):
     '''
@@ -311,6 +557,10 @@ def infix_to_rpn(expr):
     >>> infix_to_rpn('(1*2)+3+4*(5-6)')
     '1 2 * 3 + 4 5 6 - * +'
     '''
+    
+    # Parse the expression and transform it into RPN
+    tree = parser.parse(expr)
+    return ToRPN().transform(tree)
 
 
 def eval_rpn(expr):
